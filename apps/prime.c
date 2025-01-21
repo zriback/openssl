@@ -16,8 +16,10 @@
 typedef enum OPTION_choice {
     OPT_COMMON,
     OPT_HEX, OPT_GENERATE, OPT_BITS, OPT_SAFE, OPT_CHECKS,
-    OPT_PROV_ENUM
+    OPT_PROV_ENUM,
+    OPT_IN_FILE
 } OPTION_CHOICE;
+
 
 static int check_num(const char *s, const int is_hex)
 {
@@ -43,9 +45,11 @@ const OPTIONS prime_options[] = {
     {"help", OPT_HELP, '-', "Display this summary"},
     {"bits", OPT_BITS, 'p', "Size of number in bits"},
     {"checks", OPT_CHECKS, 'p', "Number of checks"},
+    {"hex", OPT_HEX, '-',
+     "Enables hex format for output from prime generation or input to primality checking"},
+    {"file", OPT_IN_FILE, '-', "Provide file names containing numbers for primality checking"},
 
     OPT_SECTION("Output"),
-    {"hex", OPT_HEX, '-', "Hex output"},
     {"generate", OPT_GENERATE, '-', "Generate a prime"},
     {"safe", OPT_SAFE, '-',
      "When used with -generate, generate a safe prime"},
@@ -60,9 +64,10 @@ const OPTIONS prime_options[] = {
 int prime_main(int argc, char **argv)
 {
     BIGNUM *bn = NULL;
-    int hex = 0, generate = 0, bits = 0, safe = 0, ret = 1;
+    int hex = 0, generate = 0, bits = 0, safe = 0, ret = 1, in_file = 0;
     char *prog;
     OPTION_CHOICE o;
+    char *file_read_buf;
 
     prog = opt_init(argc, argv, prime_options);
     while ((o = opt_next()) != OPT_EOF) {
@@ -95,6 +100,9 @@ opthelp:
         case OPT_PROV_CASES:
             if (!opt_provider(o))
                 goto end;
+            break;
+        case OPT_IN_FILE:
+            in_file = 1;
             break;
         }
     }
@@ -134,13 +142,45 @@ opthelp:
         OPENSSL_free(s);
     } else {
         for ( ; *argv; argv++) {
-            int r = check_num(argv[0], hex);
+            char *check_val;
+            if (!in_file) {
+                check_val = argv[0];
+            } else {
+                FILE *fp = fopen(argv[0], "r");
+                if (fp == NULL) {
+                    BIO_printf(bio_err, "Failed to open file (%s)\n", argv[0]);
+                    goto end;
+                }
+
+                fseek(fp, 0, SEEK_END);
+                long size = ftell(fp);
+                rewind(fp);
+
+                file_read_buf = malloc(size + 1);
+                if (file_read_buf == NULL) {
+                    BIO_printf(bio_err, "Failed to allocate memory");
+                    fclose(fp);
+                    goto end;
+                }
+
+                fread(file_read_buf, 1, size, fp);
+                fclose(fp);
+                file_read_buf[size] = '\0';
+
+                /* Trim trailing newline if present */
+                if (file_read_buf[size - 1] == '\n')
+                    file_read_buf[size - 1] = '\0';
+
+                check_val = file_read_buf;
+            }
+
+            int r = check_num(check_val, hex);
 
             if (r)
-                r = hex ? BN_hex2bn(&bn, argv[0]) : BN_dec2bn(&bn, argv[0]);
+                r = hex ? BN_hex2bn(&bn, check_val) : BN_dec2bn(&bn, check_val);
 
             if (!r) {
-                BIO_printf(bio_err, "Failed to process value (%s)\n", argv[0]);
+                BIO_printf(bio_err, "Failed to process value (%s)\n", check_val);
                 goto end;
             }
 
@@ -151,7 +191,7 @@ opthelp:
                 goto end;
             }
             BIO_printf(bio_out, " (%s) %s prime\n",
-                       argv[0],
+                       check_val,
                        r == 1 ? "is" : "is not");
         }
     }
@@ -159,5 +199,7 @@ opthelp:
     ret = 0;
  end:
     BN_free(bn);
+    if (in_file)
+        free(file_read_buf);
     return ret;
 }
